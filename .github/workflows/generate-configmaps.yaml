@@ -1,0 +1,106 @@
+name: Generate application ConfigMaps
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - src/app.py
+      - src/requirements.txt
+      - .github/workflows/generate-configmaps.yaml
+  pull_request:
+    paths:
+      - src/app.py
+      - src/requirements.txt
+      - .github/workflows/generate-configmaps.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    name: Generate ConfigMaps
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate manifests/app ConfigMaps
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+          OUTPUT_DIR = ROOT / "manifests" / "app"
+          OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+          def block_scalar(content):
+              marker = "|+" if content.endswith("\n") else "|"
+              if content == "":
+                  return marker + "\n"
+              return marker + "\n" + "".join(f"    {line}\n" for line in content.splitlines())
+
+
+          def configmap(name, namespace, key, source, destination):
+              content = source.read_text()
+              rendered = "\n".join(
+                  [
+                      "apiVersion: v1",
+                      "data:",
+                      f"  {key}: {block_scalar(content).rstrip()}",
+                      "kind: ConfigMap",
+                      "metadata:",
+                      "  labels:",
+                      "    app.kubernetes.io/name: gitops-demo-app",
+                      "    app.kubernetes.io/part-of: gitops-demo",
+                      f"  name: {name}",
+                      f"  namespace: {namespace}",
+                      "",
+                  ]
+              )
+              destination.write_text(rendered)
+
+
+          configmap(
+              name="gitops-demo-app-code",
+              namespace="gitops-demo-app",
+              key="app.py",
+              source=ROOT / "src" / "app.py",
+              destination=OUTPUT_DIR / "code.yaml",
+          )
+          configmap(
+              name="gitops-demo-app-requirements",
+              namespace="gitops-demo-app",
+              key="requirements.txt",
+              source=ROOT / "src" / "requirements.txt",
+              destination=OUTPUT_DIR / "requirements.yaml",
+          )
+          PY
+
+      - name: Show generated changes
+        run: git diff -- manifests/app/code.yaml manifests/app/requirements.yaml
+
+      - name: Validate generated files are committed
+        if: github.event_name == 'pull_request'
+        run: |
+          git diff --exit-code -- manifests/app/code.yaml manifests/app/requirements.yaml
+
+      - name: Commit generated ConfigMaps if needed
+        if: github.event_name != 'pull_request'
+        run: |
+          if git diff --quiet -- manifests/app/code.yaml manifests/app/requirements.yaml; then
+            echo "Generated ConfigMaps are already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifests/app/code.yaml manifests/app/requirements.yaml
+          git commit -m "[GITOPS] auto-generate application configmaps"
+          git push

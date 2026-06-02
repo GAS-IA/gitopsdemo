@@ -1,0 +1,617 @@
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+
+import pika
+import psycopg2
+from flask import Flask, redirect, render_template_string, request, url_for
+from psycopg2.extras import Json
+from redis import Redis
+
+
+APP_TITLE = "GitOps Demo - Incident Operations"
+QUEUE_NAME = "incident_submissions"
+REDIS_PREFIX = "incident_submissions"
+
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "gitops-demo-dev-secret")
+
+
+HTML = """
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ app_title }}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7f9;
+        color: #172033;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      main {
+        width: min(1040px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0;
+      }
+
+      header {
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        margin: 0;
+        max-width: 760px;
+        color: #5d6878;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 20px;
+        align-items: start;
+      }
+
+      form,
+      aside {
+        background: #ffffff;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        box-shadow: 0 10px 30px rgba(23, 32, 51, 0.06);
+      }
+
+      form {
+        padding: 24px;
+      }
+
+      aside {
+        padding: 20px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      label {
+        display: grid;
+        gap: 7px;
+        color: #354052;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid #bdc5d2;
+        border-radius: 6px;
+        color: #172033;
+        background: #ffffff;
+        font: inherit;
+        font-size: 15px;
+        padding: 11px 12px;
+        outline: none;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+      }
+
+      textarea {
+        min-height: 132px;
+        resize: vertical;
+      }
+
+      .wide {
+        grid-column: 1 / -1;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      button {
+        min-height: 42px;
+        border: 0;
+        border-radius: 6px;
+        background: #1f6feb;
+        color: #ffffff;
+        cursor: pointer;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 760;
+        padding: 10px 12px;
+      }
+
+      button:hover {
+        background: #1b5fc7;
+      }
+
+      button.secondary {
+        background: #2f3b52;
+      }
+
+      button.secondary:hover {
+        background: #253044;
+      }
+
+      .message {
+        margin: 0 0 18px;
+        border-radius: 6px;
+        padding: 12px 14px;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .message.ok {
+        background: #e8f7ef;
+        border: 1px solid #a8dfbf;
+        color: #155b31;
+      }
+
+      .message.error {
+        background: #fff0f0;
+        border: 1px solid #f1bbbb;
+        color: #8b1f1f;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 17px;
+      }
+
+      dl {
+        display: grid;
+        gap: 12px;
+        margin: 0;
+      }
+
+      dt {
+        color: #5d6878;
+        font-size: 12px;
+        font-weight: 760;
+        text-transform: uppercase;
+      }
+
+      dd {
+        margin: 4px 0 0;
+        color: #172033;
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+
+      @media (max-width: 860px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 20px, 1040px);
+          padding: 20px 0;
+        }
+
+        form,
+        aside {
+          padding: 16px;
+        }
+
+        .grid,
+        .actions {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Registro de incidentes de operação (v1.0.0)</h1>
+        <p class="subtitle">Envie o mesmo incidente para PostgreSQL, RabbitMQ, Redis ou todos os backends da demo.</p>
+      </header>
+
+      {% if status %}
+        <p class="message {{ status.kind }}">{{ status.text }}</p>
+      {% endif %}
+
+      <section class="layout">
+        <form method="post" action="{{ url_for('submit') }}">
+          <div class="grid">
+            <label>
+              Titulo
+              <input name="title" value="{{ form.title }}" maxlength="160" required>
+            </label>
+
+            <label>
+              Reporter
+              <input name="reporter" value="{{ form.reporter }}" maxlength="120" required>
+            </label>
+
+            <label>
+              Servico
+              <input name="service_name" value="{{ form.service_name }}" maxlength="120" required>
+            </label>
+
+            <label>
+              Ambiente
+              <select name="environment" required>
+                {% for option in ["dev", "staging", "production"] %}
+                  <option value="{{ option }}" {% if form.environment == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <label>
+              Severidade
+              <select name="severity" required>
+                {% for option in ["low", "medium", "high", "critical"] %}
+                  <option value="{{ option }}" {% if form.severity == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <label class="wide">
+              Descricao
+              <textarea name="description" maxlength="2000" required>{{ form.description }}</textarea>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button name="target" value="postgresql" type="submit">PostgreSQL</button>
+            <button name="target" value="rabbitmq" type="submit">RabbitMQ</button>
+            <button name="target" value="redis" type="submit">Redis</button>
+            <button class="secondary" name="target" value="all" type="submit">Todos</button>
+          </div>
+        </form>
+
+        <aside>
+          <h2>Configuracao ativa</h2>
+          <dl>
+            <div>
+              <dt>PostgreSQL</dt>
+              <dd>{{ config.postgresql }}</dd>
+            </div>
+            <div>
+              <dt>RabbitMQ</dt>
+              <dd>{{ config.rabbitmq }}</dd>
+            </div>
+            <div>
+              <dt>Redis</dt>
+              <dd>{{ config.redis }}</dd>
+            </div>
+          </dl>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>
+"""
+
+
+DEFAULT_FORM = {
+    "title": "",
+    "reporter": "",
+    "service_name": "",
+    "environment": "production",
+    "severity": "medium",
+    "description": "",
+}
+
+
+def env(name, default):
+    return os.getenv(name, default)
+
+
+def postgresql_settings():
+    return {
+        "host": env("POSTGRES_HOST", "postgresql.gitops-demo-services.svc.cluster.local"),
+        "port": int(env("POSTGRES_PORT", "5432")),
+        "dbname": env("POSTGRES_DB", "incidents"),
+        "user": env("POSTGRES_USER", "gitops_demo"),
+        "password": env("POSTGRES_PASSWORD", "gitops-demo-password"),
+        "connect_timeout": int(env("POSTGRES_CONNECT_TIMEOUT", "5")),
+    }
+
+
+def rabbitmq_settings():
+    return {
+        "host": env("RABBITMQ_HOST", "rabbitmq.gitops-demo-services.svc.cluster.local"),
+        "port": int(env("RABBITMQ_PORT", "5672")),
+        "username": env("RABBITMQ_USER", env("RABBITMQ_DEFAULT_USER", "gitops_demo")),
+        "password": env("RABBITMQ_PASSWORD", env("RABBITMQ_DEFAULT_PASS", "gitops-demo-password")),
+    }
+
+
+def redis_settings():
+    return {
+        "host": env("REDIS_HOST", "redis.gitops-demo-services.svc.cluster.local"),
+        "port": int(env("REDIS_PORT", "6379")),
+        "password": env("REDIS_PASSWORD", "gitops-demo-password"),
+        "decode_responses": True,
+        "socket_connect_timeout": int(env("REDIS_CONNECT_TIMEOUT", "5")),
+    }
+
+
+def render_page(status=None, form=None):
+    return render_template_string(
+        HTML,
+        app_title=APP_TITLE,
+        status=status,
+        form=form or DEFAULT_FORM,
+        config={
+            "postgresql": f"{postgresql_settings()['host']}:{postgresql_settings()['port']}/{postgresql_settings()['dbname']}",
+            "rabbitmq": f"{rabbitmq_settings()['host']}:{rabbitmq_settings()['port']}/{QUEUE_NAME}",
+            "redis": f"{redis_settings()['host']}:{redis_settings()['port']}/{REDIS_PREFIX}:*",
+        },
+    )
+
+
+def collect_form():
+    data = {
+        "title": request.form.get("title", "").strip(),
+        "reporter": request.form.get("reporter", "").strip(),
+        "service_name": request.form.get("service_name", "").strip(),
+        "environment": request.form.get("environment", "").strip(),
+        "severity": request.form.get("severity", "").strip(),
+        "description": request.form.get("description", "").strip(),
+    }
+
+    missing = [field for field, value in data.items() if not value]
+    if missing:
+        raise ValueError(f"Campos obrigatorios ausentes: {', '.join(missing)}")
+
+    data["id"] = str(uuid.uuid4())
+    data["submitted_at"] = datetime.now(timezone.utc).isoformat()
+    return data
+
+
+def postgresql_connect():
+    return psycopg2.connect(**postgresql_settings())
+
+
+def init_postgresql():
+    with postgresql_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                create table if not exists incident_submissions (
+                    id text primary key,
+                    submitted_at timestamptz not null,
+                    title text not null,
+                    reporter text not null,
+                    service_name text not null,
+                    environment text not null,
+                    severity text not null,
+                    description text not null,
+                    payload jsonb not null
+                )
+                """
+            )
+
+
+def save_postgresql(incident):
+    init_postgresql()
+    with postgresql_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into incident_submissions (
+                    id,
+                    submitted_at,
+                    title,
+                    reporter,
+                    service_name,
+                    environment,
+                    severity,
+                    description,
+                    payload
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    incident["id"],
+                    incident["submitted_at"],
+                    incident["title"],
+                    incident["reporter"],
+                    incident["service_name"],
+                    incident["environment"],
+                    incident["severity"],
+                    incident["description"],
+                    Json(incident),
+                ),
+            )
+    return "PostgreSQL"
+
+
+def rabbitmq_connection():
+    settings = rabbitmq_settings()
+    credentials = pika.PlainCredentials(settings["username"], settings["password"])
+    params = pika.ConnectionParameters(
+        host=settings["host"],
+        port=settings["port"],
+        credentials=credentials,
+        heartbeat=30,
+        blocked_connection_timeout=10,
+        socket_timeout=5,
+    )
+    return pika.BlockingConnection(params)
+
+
+def init_rabbitmq():
+    connection = rabbitmq_connection()
+    try:
+        channel = connection.channel()
+        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+    finally:
+        connection.close()
+
+
+def publish_rabbitmq(incident):
+    connection = rabbitmq_connection()
+    try:
+        channel = connection.channel()
+        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+        channel.basic_publish(
+            exchange="",
+            routing_key=QUEUE_NAME,
+            body=json.dumps(incident).encode("utf-8"),
+            properties=pika.BasicProperties(
+                delivery_mode=2,
+                content_type="application/json",
+            ),
+        )
+    finally:
+        connection.close()
+    return "RabbitMQ"
+
+
+def redis_client():
+    return Redis(**redis_settings())
+
+
+def init_redis():
+    client = redis_client()
+    try:
+        client.hsetnx(f"{REDIS_PREFIX}:meta", "initialized_at", datetime.now(timezone.utc).isoformat())
+        client.hset(f"{REDIS_PREFIX}:meta", "prefix", REDIS_PREFIX)
+    finally:
+        client.close()
+
+
+def save_redis(incident):
+    init_redis()
+    client = redis_client()
+    try:
+        key = f"{REDIS_PREFIX}:item:{incident['id']}"
+        pipe = client.pipeline()
+        pipe.hset(key, mapping={field: str(value) for field, value in incident.items()})
+        pipe.lpush(f"{REDIS_PREFIX}:ids", incident["id"])
+        pipe.execute()
+    finally:
+        client.close()
+    return "Redis"
+
+
+def initialize_backends():
+    results = {}
+    for name, initializer in {
+        "postgresql": init_postgresql,
+        "rabbitmq": init_rabbitmq,
+        "redis": init_redis,
+    }.items():
+        try:
+            initializer()
+            results[name] = "ok"
+        except Exception as exc:
+            app.logger.warning("Backend %s initialization failed: %s", name, exc)
+            results[name] = str(exc)
+    return results
+
+
+def submit_to_targets(target, incident):
+    handlers = {
+        "postgresql": save_postgresql,
+        "rabbitmq": publish_rabbitmq,
+        "redis": save_redis,
+    }
+
+    selected = list(handlers) if target == "all" else [target]
+    if any(item not in handlers for item in selected):
+        raise ValueError(f"Destino invalido: {target}")
+
+    saved = []
+    failures = []
+    for item in selected:
+        try:
+            saved.append(handlers[item](incident))
+        except Exception as exc:
+            app.logger.exception("Failed to submit incident to %s", item)
+            failures.append(f"{item}: {exc}")
+
+    return saved, failures
+
+
+@app.get("/")
+def index():
+    return render_page()
+
+
+@app.post("/submit")
+def submit():
+    try:
+        incident = collect_form()
+        target = request.form.get("target", "")
+        saved, failures = submit_to_targets(target, incident)
+    except Exception as exc:
+        return render_page(
+            status={"kind": "error", "text": str(exc)},
+            form={**DEFAULT_FORM, **request.form.to_dict()},
+        ), 400
+
+    if failures:
+        return render_page(
+            status={
+                "kind": "error",
+                "text": f"Incidente {incident['id']} enviado para {', '.join(saved) or 'nenhum backend'}; falhas: {'; '.join(failures)}",
+            },
+            form={**DEFAULT_FORM, **request.form.to_dict()},
+        ), 502
+
+    return redirect(url_for("submitted", incident_id=incident["id"], targets=",".join(saved)))
+
+
+@app.get("/submitted")
+def submitted():
+    incident_id = request.args.get("incident_id", "")
+    targets = request.args.get("targets", "")
+    text = f"Incidente {incident_id} enviado com sucesso para {targets}."
+    return render_page(status={"kind": "ok", "text": text})
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+initialize_backends()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(env("PORT", "8080")))

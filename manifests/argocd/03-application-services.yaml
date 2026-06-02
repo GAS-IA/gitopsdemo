@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-demo-services
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: gitops-demo-services
+    app.kubernetes.io/part-of: gitops-demo
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: gitops-demo
+  source:
+    repoURL: https://github.com/GAS-IA/gitopsdemo.git
+    targetRevision: main
+    path: manifests/services
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitops-demo-services
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground

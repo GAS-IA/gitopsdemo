@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gitops-demo
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: gitops-demo
+    app.kubernetes.io/part-of: gitops-demo
+spec:
+  description: GitOps demo with Flask, PostgreSQL, RabbitMQ and Redis.
+  sourceRepos:
+    - "*"
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: gitops-demo-app
+    - server: https://kubernetes.default.svc
+      namespace: gitops-demo-services
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

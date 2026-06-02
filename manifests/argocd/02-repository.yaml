@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitops-demo-repository
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: gitops-demo-repository
+    app.kubernetes.io/part-of: gitops-demo
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: git
+  url: https://github.com/GAS-IA/gitopsdemo
+  #username: REPLACE_WITH_GITHUB_USERNAME
+  #password: REPLACE_WITH_GITHUB_TOKEN

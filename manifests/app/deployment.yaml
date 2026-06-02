@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-demo-app
+  namespace: gitops-demo-app
+  labels:
+    app.kubernetes.io/name: gitops-demo-app
+    app.kubernetes.io/part-of: gitops-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitops-demo-app
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitops-demo-app
+        app.kubernetes.io/part-of: gitops-demo
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              python -m pip install --no-cache-dir --target /tmp/python-deps -r /app/requirements.txt
+              export PYTHONPATH=/tmp/python-deps
+              exec /tmp/python-deps/bin/gunicorn --bind 0.0.0.0:8080 app:app
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: gitops-demo-app-config
+            - secretRef:
+                name: gitops-demo-app-secret
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: app-code
+              mountPath: /app/app.py
+              subPath: app.py
+              readOnly: true
+            - name: app-requirements
+              mountPath: /app/requirements.txt
+              subPath: requirements.txt
+              readOnly: true
+      volumes:
+        - name: app-code
+          configMap:
+            name: gitops-demo-app-code
+        - name: app-requirements
+          configMap:
+            name: gitops-demo-app-requirements
+
