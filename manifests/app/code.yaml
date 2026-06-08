@@ -246,7 +246,7 @@ data:
       <body>
         <main>
           <header>
-            <h1>Registro de incidentes de operacao (v1.0.0)</h1>
+            <h1>Registro de incidentes de operação (v1.0.0)</h1>
             <p class="subtitle">Envie o mesmo incidente para PostgreSQL, RabbitMQ, Redis ou todos os backends da demo.</p>
           </header>
     
